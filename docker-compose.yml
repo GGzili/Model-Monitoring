@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    container_name: model-monitor-backend
+    restart: unless-stopped
+    environment:
+      - DB_PATH=/data/monitor.db
+      - SSH_USER=root
+      - SSH_KEY=/root/.ssh/id_rsa
+    volumes:
+      - ./data:/data
+      - ~/.ssh:/root/.ssh:ro
+    ports:
+      - "3333:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: model-monitor-frontend
+    restart: unless-stopped
+    ports:
+      - "4444:80"
+    depends_on:
+      - backend
