@@ -6,6 +6,9 @@
       <el-form-item label="名称" prop="name">
         <el-input v-model="form.name" placeholder="如：DeepSeek-V3.1 (双机)" />
       </el-form-item>
+      <el-form-item label="API 模型名" prop="model_api_name">
+        <el-input v-model="form.model_api_name" placeholder="推理服务中的模型 ID，如：DSV3.1（留空则使用名称）" />
+      </el-form-item>
 
       <el-divider content-position="left">主节点（节点 A）</el-divider>
       <el-form-item label="服务器 IP" prop="host">
@@ -98,6 +101,7 @@ const isDual  = ref(false)
 
 const defaultForm = () => ({
   name: '',
+  model_api_name: '',
   host: '', port: 8000, container: '', exec_cmd: '',
   host_b: '', port_b: 8000, container_b: '', exec_cmd_b: '',
   ssh_user: 'root', ssh_password: '', ssh_port: 22,
