@@ -6,20 +6,20 @@ from database import get_conn
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
 
-def _job(model_id: int, host: str, port: int):
-    run_check(model_id, host, port)
+def _job(model_id: int, host: str, port: int, model_name: str):
+    run_check(model_id, host, port, model_name)
 
 
 def _job_id(model_id: int) -> str:
     return f"check_{model_id}"
 
 
-def add_job(model_id: int, host: str, port: int, interval: int):
+def add_job(model_id: int, host: str, port: int, interval: int, model_name: str = ""):
     scheduler.add_job(
         _job,
         trigger=IntervalTrigger(seconds=interval),
         id=_job_id(model_id),
-        args=[model_id, host, port],
+        args=[model_id, host, port, model_name],
         replace_existing=True,
         max_instances=1,
     )
@@ -35,10 +35,11 @@ def reload_all_jobs():
     """从数据库加载所有已启用的模型并注册定时任务。"""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, host, port, interval FROM model_targets WHERE enabled = 1"
+            "SELECT id, name, model_api_name, host, port, interval FROM model_targets WHERE enabled = 1"
         ).fetchall()
     for row in rows:
-        add_job(row["id"], row["host"], row["port"], row["interval"])
+        api_name = row["model_api_name"] or row["name"]
+        add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
 
 
 def start():

@@ -9,6 +9,10 @@ export default defineConfig({
         target: 'http://backend:8000',
         changeOrigin: true,
       },
+      '/v1': {
+        target: 'http://backend:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

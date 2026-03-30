@@ -29,3 +29,12 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# === 离线打包 / 本地产物（勿提交）===
+dist_package/
+*.zip
+httpx_wheels/
+
+# === 本地工具 / 敏感路径 ===
+.claude/
+deploy.sh

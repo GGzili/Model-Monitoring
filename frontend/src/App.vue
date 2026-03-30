@@ -1,9 +1,16 @@
 <template>
   <el-container style="min-height:100vh;background:#f0f2f5">
     <!-- 顶栏 -->
-    <el-header style="background:#001529;display:flex;align-items:center;justify-content:space-between">
-      <span style="color:#fff;font-size:18px;font-weight:600">模型监测平台</span>
-      <el-button type="primary" size="small" @click="openAdd">+ 添加模型</el-button>
+    <el-header style="background:#001529;flex-direction:column;align-items:stretch;padding:12px 20px;height:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <span style="color:#fff;font-size:18px;font-weight:600">模型监测平台</span>
+        <el-button type="primary" size="small" @click="openAdd">+ 添加模型</el-button>
+      </div>
+      <div style="color:#a6adb4;font-size:12px;margin-top:8px;line-height:1.5">
+        网关仅转发<strong style="color:#e6f0ff">本页配置的模型</strong>：请求 <code style="background:#ffffff14;padding:2px 6px;border-radius:4px">POST /v1/chat/completions</code>，
+        参数 <code style="background:#ffffff14;padding:2px 6px;border-radius:4px">model</code> 须与各卡片「网关调用名」一致；须<strong style="color:#e6f0ff">启用监测且开放网关</strong>。
+        每个模型单独维护<strong style="color:#e6f0ff">最大并发</strong>与<strong style="color:#e6f0ff">消息队列</strong>（超出并发先入队，队列满返回 503）。
+      </div>
     </el-header>
 
     <el-main>
@@ -57,6 +64,24 @@
             <div class="info-row"><span class="label">检测时间</span>
               <span>{{ m.last_checked_at || '-' }}</span>
             </div>
+            <div class="info-row gateway-block">
+              <span class="label">网关调用名</span>
+              <span class="gateway-call">
+                <code>{{ gatewayCallName(m) }}</code>
+                <el-button
+                  v-if="gatewayRoutable(m)"
+                  type="primary"
+                  link
+                  size="small"
+                  @click="copyCallName(m)"
+                >
+                  <el-icon><DocumentCopy /></el-icon>
+                </el-button>
+              </span>
+            </div>
+            <div class="info-row"><span class="label">网关 / 并发 / 队列</span>
+              <span>{{ gatewaySummary(m) }}</span>
+            </div>
 
             <el-divider style="margin:12px 0" />
 
@@ -106,6 +131,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDashboard, checkNow, restartModel, deleteModel } from './api/index.js'
+import { DocumentCopy } from '@element-plus/icons-vue'
 import ModelForm from './components/ModelForm.vue'
 import HistoryChart from './components/HistoryChart.vue'
 
@@ -124,6 +150,40 @@ const unknownCount = computed(() => dashboard.value.filter(m => m.last_status ==
 
 const statusTag   = s => ({ ok: 'success', error: 'danger', timeout: 'warning' }[s] ?? 'info')
 const statusLabel = s => ({ ok: '正常', error: '异常', timeout: '超时', unknown: '未知' }[s] ?? s)
+
+function truthy(v) {
+  return v === true || v === 1 || v === '1'
+}
+
+/** 客户端请求体 model 字段须与此一致（API 模型名优先，否则为显示名称） */
+function gatewayCallName(m) {
+  const s = (m.model_api_name || '').trim()
+  return s || m.name || '-'
+}
+
+/** 监测启用且开放网关时，该模型才接受 /v1 转发 */
+function gatewayRoutable(m) {
+  return truthy(m.enabled) && truthy(m.gateway_enabled)
+}
+
+function gatewaySummary(m) {
+  if (!truthy(m.enabled)) return '监测已关闭，网关不可用'
+  if (!truthy(m.gateway_enabled)) return '网关未开放'
+  const c = m.gateway_max_concurrent ?? 1
+  const q = m.gateway_max_queue
+  const qStr = q === 0 || q === '0' ? '队列不限长' : `队列最多等 ${q} 个`
+  return `已开放 · 并发 ${c} · ${qStr}`
+}
+
+async function copyCallName(m) {
+  const t = gatewayCallName(m)
+  try {
+    await navigator.clipboard.writeText(t)
+    ElMessage.success('已复制网关调用名：' + t)
+  } catch {
+    ElMessage.error('复制失败，请手动选择复制')
+  }
+}
 
 async function load() {
   const res = await getDashboard()
@@ -193,4 +253,7 @@ body { margin: 0; font-family: sans-serif; }
 .info-row { display: flex; justify-content: space-between; font-size: 13px;
             padding: 3px 0; border-bottom: 1px solid #f5f5f5; }
 .info-row .label { color: #909399; }
+.gateway-block { align-items: flex-start; }
+.gateway-call { display: flex; align-items: center; gap: 4px; text-align: right; flex-wrap: wrap; justify-content: flex-end; max-width: 68%; }
+.gateway-call code { font-size: 12px; background: #f4f4f5; padding: 2px 8px; border-radius: 4px; word-break: break-all; }
 </style>

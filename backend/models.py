@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -21,6 +21,10 @@ class ModelTargetCreate(BaseModel):
     # 检测
     interval: int = 300
     enabled: bool = True
+    model_api_name: str = ""
+    gateway_enabled: bool = True
+    gateway_max_concurrent: int = Field(default=1, ge=1, le=256)
+    gateway_max_queue: int = Field(default=64, ge=0, le=100_000)
 
 
 class ModelTargetUpdate(BaseModel):
@@ -38,6 +42,10 @@ class ModelTargetUpdate(BaseModel):
     ssh_port: Optional[int] = None
     interval: Optional[int] = None
     enabled: Optional[bool] = None
+    model_api_name: Optional[str] = None
+    gateway_enabled: Optional[bool] = None
+    gateway_max_concurrent: Optional[int] = Field(None, ge=1, le=256)
+    gateway_max_queue: Optional[int] = Field(None, ge=0, le=100_000)
 
 
 class ModelTargetOut(BaseModel):
@@ -56,6 +64,10 @@ class ModelTargetOut(BaseModel):
     ssh_port: int
     interval: int
     enabled: bool
+    model_api_name: str
+    gateway_enabled: bool
+    gateway_max_concurrent: int
+    gateway_max_queue: int
     created_at: str
 
     class Config:

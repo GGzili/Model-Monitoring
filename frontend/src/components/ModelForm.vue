@@ -65,6 +65,24 @@
         <el-input-number v-model="form.ssh_port" :min="1" :max="65535" style="width:100%" />
       </el-form-item>
 
+      <el-divider content-position="left">网关与消息队列（每模型独立）</el-divider>
+      <div class="section-desc">
+        仅此处配置的模型可通过本站 <code>/v1/chat/completions</code> 访问；每个模型各自维护并发上限与等待队列，互不影响。
+        <span class="warn-inline">「API 模型名」留空时网关调用名等于「名称」；请勿让多条配置使用相同调用名（先匹配到的生效）。</span>
+      </div>
+      <el-form-item label="开放网关">
+        <el-switch v-model="form.gateway_enabled" active-text="是" inactive-text="否" />
+        <div class="hint">关闭后该模型不会出现在 <code>/v1/models</code>，且请求 <code>model</code> 匹配本配置时将 404。</div>
+      </el-form-item>
+      <el-form-item label="最大并发" prop="gateway_max_concurrent">
+        <el-input-number v-model="form.gateway_max_concurrent" :min="1" :max="256" style="width:100%" />
+        <div class="hint">同时转发到后端的请求数。超出部分进入<strong>本模型</strong>的消息队列等待（FIFO），不会打到其他模型。</div>
+      </el-form-item>
+      <el-form-item label="消息队列容量" prop="gateway_max_queue">
+        <el-input-number v-model="form.gateway_max_queue" :min="0" :max="100000" style="width:100%" />
+        <div class="hint">等待槽上限（正在排队、尚未获得并发名额的请求数）。满则新请求立即 503；<strong>0</strong> 表示不限制队列长度（慎用）。</div>
+      </el-form-item>
+
       <el-divider content-position="left">检测设置</el-divider>
       <el-form-item label="检测间隔(秒)" prop="interval">
         <el-input-number v-model="form.interval" :min="30" :step="30" style="width:100%" />
@@ -106,13 +124,14 @@ const defaultForm = () => ({
   host_b: '', port_b: 8000, container_b: '', exec_cmd_b: '',
   ssh_user: 'root', ssh_password: '', ssh_port: 22,
   interval: 300, enabled: true,
+  gateway_enabled: true, gateway_max_concurrent: 1, gateway_max_queue: 64,
 })
 const form = ref(defaultForm())
 
 watch(() => props.editData, d => {
   if (d) {
     isEdit.value = true
-    form.value = { ...d }
+    form.value = { ...defaultForm(), ...d }
     isDual.value = !!d.host_b
   } else {
     isEdit.value = false
@@ -161,3 +180,11 @@ async function submit() {
   }
 }
 </script>
+
+<style scoped>
+.section-desc { font-size: 12px; color: #606266; margin: -8px 0 12px; line-height: 1.5; }
+.section-desc code { background: #f4f4f5; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+.warn-inline { display: block; margin-top: 6px; color: #e6a23c; }
+.hint { font-size: 12px; color: #909399; margin-top: 4px; line-height: 1.45; }
+.hint code { background: #f4f4f5; padding: 0 4px; border-radius: 3px; font-size: 11px; }
+</style>

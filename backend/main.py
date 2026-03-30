@@ -16,6 +16,7 @@ from models import (
     RestartResult,
 )
 from restart import restart_single, restart_dual
+import gateway as gw
 
 
 @asynccontextmanager
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="模型监测平台", lifespan=lifespan)
+app.include_router(gw.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,20 +55,27 @@ def create_model(body: ModelTargetCreate):
             INSERT INTO model_targets
               (name, host, port, container, exec_cmd,
                host_b, port_b, container_b, exec_cmd_b,
-               ssh_user, ssh_password, interval, enabled)
-            VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?)
+               ssh_user, ssh_password, interval, enabled, model_api_name,
+               gateway_enabled, gateway_max_concurrent, gateway_max_queue)
+            VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?,?,?)
             """,
             (
                 body.name, body.host, body.port, body.container, body.exec_cmd,
                 body.host_b, body.port_b, body.container_b, body.exec_cmd_b,
                 body.ssh_user, body.ssh_password, body.interval, int(body.enabled),
+                body.model_api_name,
+                int(body.gateway_enabled),
+                body.gateway_max_concurrent,
+                body.gateway_max_queue,
             ),
         )
         row = conn.execute(
             "SELECT * FROM model_targets WHERE id = ?", (cur.lastrowid,)
         ).fetchone()
     if body.enabled:
-        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"])
+        api_name = row["model_api_name"] or row["name"]
+        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
+    gw.invalidate_gate(row["id"])
     return dict(row)
 
 
@@ -98,15 +107,18 @@ def update_model(model_id: int, body: ModelTargetUpdate):
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
     if row["enabled"]:
-        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"])
+        api_name = row["model_api_name"] or row["name"]
+        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
     else:
         scheduler.remove_job(model_id)
+    gw.invalidate_gate(model_id)
     return dict(row)
 
 
 @app.delete("/api/models/{model_id}")
 def delete_model(model_id: int):
     scheduler.remove_job(model_id)
+    gw.invalidate_gate(model_id)
     with database.get_conn() as conn:
         conn.execute("DELETE FROM check_results WHERE model_id = ?", (model_id,))
         conn.execute("DELETE FROM model_targets WHERE id = ?", (model_id,))
@@ -123,7 +135,7 @@ def check_now(model_id: int):
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
-    run_check(model_id, row["host"], row["port"])
+    run_check(model_id, row["host"], row["port"], row["model_api_name"] or row["name"])
     with database.get_conn() as conn:
         last = conn.execute(
             "SELECT * FROM check_results WHERE model_id = ? ORDER BY id DESC LIMIT 1",

@@ -28,6 +28,11 @@ def init_db():
                 -- 检测
                 interval     INTEGER NOT NULL DEFAULT 300,
                 enabled      INTEGER NOT NULL DEFAULT 1,
+                model_api_name TEXT NOT NULL DEFAULT '',
+                -- 网关：经本站 /v1 转发时的并发与排队上限
+                gateway_enabled       INTEGER NOT NULL DEFAULT 1,
+                gateway_max_concurrent INTEGER NOT NULL DEFAULT 1,
+                gateway_max_queue     INTEGER NOT NULL DEFAULT 64,
                 created_at   TEXT DEFAULT (datetime('now'))
             );
 
@@ -41,6 +46,17 @@ def init_db():
                 FOREIGN KEY(model_id) REFERENCES model_targets(id)
             );
         """)
+        # 兼容旧数据库：若 model_api_name 列不存在则添加
+        for col_sql in (
+            "ALTER TABLE model_targets ADD COLUMN model_api_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE model_targets ADD COLUMN gateway_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_targets ADD COLUMN gateway_max_concurrent INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_targets ADD COLUMN gateway_max_queue INTEGER NOT NULL DEFAULT 64",
+        ):
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass
 
 
 @contextmanager

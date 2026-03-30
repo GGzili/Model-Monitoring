@@ -12,6 +12,31 @@ sudo docker exec -d <容器名> bash -c "<容器内启动命令>"
 
 ---
 
+## 网关压测脚本 `test_gateway_limit.py`（可选）
+
+在**监控机本机 Python**上跑时需要 `httpx`。内网离线时：
+
+**有网的机器上**（与监控机同为 **Linux x86_64** 时，用下面平台参数；若是 Windows 仅下载给本机用可去掉 `--platform`）：
+
+```bash
+pip download -r scripts/requirements-test.txt -d httpx_wheels \
+  --platform manylinux2014_x86_64 --python-version 311 --only-binary=:all:
+```
+
+将目录 `httpx_wheels/` 拷到内网，在监控机上：
+
+```bash
+pip install --no-index --find-links=./httpx_wheels -r scripts/requirements-test.txt
+```
+
+若你已打过 **`dist_package`**，也可直接用包里的 **`wheels/`**（与后端依赖一起下载的，已含 `httpx` 及依赖）：
+
+```bash
+pip install --no-index --find-links=/opt/Model_Monitoring/dist_package/wheels httpx
+```
+
+---
+
 ## 各模型配置示例
 
 ### 1. DeepSeek-V3.1（双机模型）

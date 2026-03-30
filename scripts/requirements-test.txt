@@ -1,0 +1,2 @@
+# 仅用于宿主机运行 test_gateway_limit.py；与平台容器无关。
+httpx>=0.27.0
