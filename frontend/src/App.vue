@@ -45,7 +45,7 @@
             <template #header>
               <div style="display:flex;align-items:center;justify-content:space-between">
                 <div style="display:flex;align-items:center;gap:6px">
-                  <span style="font-weight:600">{{ m.name }}</span>
+                  <span style="font-weight:600">{{ displayName(m) }}</span>
                   <el-tag v-if="m.is_dual" type="warning" size="small" effect="plain">双机</el-tag>
                 </div>
                 <el-tag :type="statusTag(m.last_status)" effect="dark" size="small">
@@ -54,10 +54,6 @@
               </div>
             </template>
 
-            <div class="info-row"><span class="label">地址</span>
-              <span>{{ m.host }}:{{ m.port }}{{ m.is_dual ? ` / ${m.host_b}:${m.port_b}` : '' }}</span>
-            </div>
-            <div class="info-row"><span class="label">容器</span><span>{{ m.container }}</span></div>
             <div class="info-row"><span class="label">延迟</span>
               <span>{{ m.last_latency_ms != null ? m.last_latency_ms + ' ms' : '-' }}</span>
             </div>
@@ -108,11 +104,19 @@
     </el-main>
   </el-container>
 
-  <!-- 添加/编辑对话框 -->
-  <ModelForm
-    v-if="formVisible"
+  <!-- 添加 / 编辑 分两个组件挂载，避免单组件分支在部署缓存下走错 -->
+  <ModelFormAdd
+    v-if="formVisible && !dialogIsEdit"
+    :key="'add-' + formDialogKey"
     :model-value="formVisible"
-    :edit-data="editTarget"
+    @close="formVisible = false"
+    @saved="load"
+  />
+  <ModelFormEdit
+    v-if="formVisible && dialogIsEdit && editTarget"
+    :key="'edit-' + formDialogKey"
+    :model-value="formVisible"
+    :model="editTarget"
     @close="formVisible = false"
     @saved="load"
   />
@@ -122,7 +126,7 @@
     v-if="historyVisible"
     :model-value="historyVisible"
     :model-id="historyTarget?.id"
-    :model-name="historyTarget?.name"
+    :model-name="historyTarget ? displayName(historyTarget) : ''"
     @close="historyVisible = false"
   />
 </template>
@@ -132,7 +136,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDashboard, checkNow, restartModel, deleteModel } from './api/index.js'
 import { DocumentCopy } from '@element-plus/icons-vue'
-import ModelForm from './components/ModelForm.vue'
+import ModelFormAdd from './components/ModelFormAdd.vue'
+import ModelFormEdit from './components/ModelFormEdit.vue'
 import HistoryChart from './components/HistoryChart.vue'
 
 const dashboard = ref([])
@@ -141,7 +146,11 @@ const restarting = ref({})
 const formVisible   = ref(false)
 const historyVisible = ref(false)
 const editTarget    = ref(null)
+/** 与 editTarget 同步：点「编辑」为 true，点「添加」为 false，避免子组件靠 id 推断失败 */
+const dialogIsEdit  = ref(false)
 const historyTarget = ref(null)
+/** 每次打开添加/编辑递增，强制重挂载表单，避免 el-switch 等状态错乱 */
+const formDialogKey = ref(0)
 
 const total        = computed(() => dashboard.value.length)
 const okCount      = computed(() => dashboard.value.filter(m => m.last_status === 'ok').length)
@@ -155,10 +164,16 @@ function truthy(v) {
   return v === true || v === 1 || v === '1'
 }
 
-/** 客户端请求体 model 字段须与此一致（API 模型名优先，否则为显示名称） */
+/** 卡片列表展示名：有显示名称用名称，否则用 API 模型名 */
+function displayName(m) {
+  const n = (m.name || '').trim()
+  return n || (m.model_api_name || '').trim() || '未命名'
+}
+
+/** 网关 / 客户端请求的 model 字段，与 API 模型名一致 */
 function gatewayCallName(m) {
   const s = (m.model_api_name || '').trim()
-  return s || m.name || '-'
+  return s || displayName(m)
 }
 
 /** 监测启用且开放网关时，该模型才接受 /v1 转发 */
@@ -167,7 +182,7 @@ function gatewayRoutable(m) {
 }
 
 function gatewaySummary(m) {
-  if (!truthy(m.enabled)) return '监测已关闭，网关不可用'
+  if (!truthy(m.enabled)) return '监测未启用（请打开检测设置里的「启用」）'
   if (!truthy(m.gateway_enabled)) return '网关未开放'
   const c = m.gateway_max_concurrent ?? 1
   const q = m.gateway_max_queue
@@ -206,8 +221,8 @@ async function handleCheck(m) {
 async function handleRestart(m) {
   await ElMessageBox.confirm(
     m.is_dual
-      ? `确认重启「${m.name}」？\n将同时在两台服务器上执行 docker restart + 容器内启动命令。`
-      : `确认重启「${m.name}」？\n将执行 docker restart + 容器内启动命令。`,
+      ? `确认重启「${displayName(m)}」？\n将同时在两台服务器上执行 docker restart + 容器内启动命令。`
+      : `确认重启「${displayName(m)}」？\n将执行 docker restart + 容器内启动命令。`,
     '重启确认', { type: 'warning' }
   )
   restarting.value[m.id] = true
@@ -227,14 +242,24 @@ async function handleRestart(m) {
 }
 
 async function handleDelete(m) {
-  await ElMessageBox.confirm(`确认删除「${m.name}」？`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除「${displayName(m)}」？`, '删除确认', { type: 'warning' })
   await deleteModel(m.id)
   ElMessage.success('已删除')
   await load()
 }
 
-function openAdd()  { editTarget.value = null; formVisible.value = true }
-function openEdit(m) { editTarget.value = m;    formVisible.value = true }
+function openAdd() {
+  editTarget.value = null
+  dialogIsEdit.value = false
+  formDialogKey.value += 1
+  formVisible.value = true
+}
+function openEdit(m) {
+  editTarget.value = m
+  dialogIsEdit.value = true
+  formDialogKey.value += 1
+  formVisible.value = true
+}
 function openHistory(m) { historyTarget.value = m; historyVisible.value = true }
 
 let timer

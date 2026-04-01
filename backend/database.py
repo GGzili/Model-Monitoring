@@ -1,11 +1,44 @@
 import sqlite3
 import os
 from contextlib import contextmanager
+from typing import Any, Mapping, Union
+
+import field_crypto
 
 DB_PATH = os.environ.get("DB_PATH", "/data/monitor.db")
 
+RowLike = Union[sqlite3.Row, Mapping[str, Any]]
+
+
+def decrypt_target_row(row: RowLike) -> dict:
+    """将一行解密为明文 dict（供调度、SSH、网关内部使用）。"""
+    d = dict(row)
+    return field_crypto.decrypt_row(d)
+
+
+def encrypt_target_row(d: dict) -> dict:
+    """写入前加密敏感文本字段。"""
+    return field_crypto.encrypt_row(d)
+
+
+def model_target_public_dict(d: dict) -> dict:
+    """列表/详情/仪表盘 API：不含 host/port/container/exec/SSH，仅 is_dual 表示是否双机。"""
+    return {
+        "id": d["id"],
+        "name": d.get("name") or "",
+        "model_api_name": (d.get("model_api_name") or "").strip(),
+        "is_dual": bool((d.get("host_b") or "").strip()),
+        "interval": int(d["interval"]),
+        "enabled": bool(d["enabled"]),
+        "gateway_enabled": bool(d["gateway_enabled"]),
+        "gateway_max_concurrent": int(d["gateway_max_concurrent"]),
+        "gateway_max_queue": int(d["gateway_max_queue"]),
+        "created_at": d.get("created_at") or "",
+    }
+
 
 def init_db():
+    field_crypto.init_field_crypto()
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS model_targets (

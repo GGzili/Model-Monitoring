@@ -10,8 +10,9 @@ import scheduler
 from checker import run_check
 from models import (
     ModelTargetCreate,
-    ModelTargetUpdate,
-    ModelTargetOut,
+    ModelTargetTunableUpdate,
+    ModelTargetPublicOut,
+    DashboardRowOut,
     CheckResultOut,
     RestartResult,
 )
@@ -40,15 +41,37 @@ app.add_middleware(
 
 # ── 模型管理 ────────────────────────────────────────────────
 
-@app.get("/api/models", response_model=List[ModelTargetOut])
+@app.get("/api/models", response_model=List[ModelTargetPublicOut])
 def list_models():
     with database.get_conn() as conn:
         rows = conn.execute("SELECT * FROM model_targets ORDER BY id").fetchall()
-    return [dict(r) for r in rows]
+    return [
+        database.model_target_public_dict(database.decrypt_target_row(r)) for r in rows
+    ]
 
 
-@app.post("/api/models", response_model=ModelTargetOut)
+@app.post("/api/models", response_model=ModelTargetPublicOut)
 def create_model(body: ModelTargetCreate):
+    plain = {
+        "name": (body.name or "").strip(),
+        "host": body.host,
+        "port": body.port,
+        "container": body.container,
+        "exec_cmd": body.exec_cmd or "",
+        "host_b": body.host_b or "",
+        "port_b": body.port_b,
+        "container_b": body.container_b or "",
+        "exec_cmd_b": body.exec_cmd_b or "",
+        "ssh_user": body.ssh_user,
+        "ssh_password": body.ssh_password,
+        "interval": body.interval,
+        "enabled": int(body.enabled),
+        "model_api_name": body.model_api_name,
+        "gateway_enabled": int(body.gateway_enabled),
+        "gateway_max_concurrent": body.gateway_max_concurrent,
+        "gateway_max_queue": body.gateway_max_queue,
+    }
+    enc = database.encrypt_target_row(plain)
     with database.get_conn() as conn:
         cur = conn.execute(
             """
@@ -60,26 +83,37 @@ def create_model(body: ModelTargetCreate):
             VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?,?,?)
             """,
             (
-                body.name, body.host, body.port, body.container, body.exec_cmd,
-                body.host_b, body.port_b, body.container_b, body.exec_cmd_b,
-                body.ssh_user, body.ssh_password, body.interval, int(body.enabled),
-                body.model_api_name,
-                int(body.gateway_enabled),
-                body.gateway_max_concurrent,
-                body.gateway_max_queue,
+                enc["name"],
+                enc["host"],
+                enc["port"],
+                enc["container"],
+                enc["exec_cmd"],
+                enc["host_b"],
+                enc["port_b"],
+                enc["container_b"],
+                enc["exec_cmd_b"],
+                enc["ssh_user"],
+                enc["ssh_password"],
+                enc["interval"],
+                enc["enabled"],
+                enc["model_api_name"],
+                enc["gateway_enabled"],
+                enc["gateway_max_concurrent"],
+                enc["gateway_max_queue"],
             ),
         )
         row = conn.execute(
             "SELECT * FROM model_targets WHERE id = ?", (cur.lastrowid,)
         ).fetchone()
+    dec = database.decrypt_target_row(row)
     if body.enabled:
-        api_name = row["model_api_name"] or row["name"]
-        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
+        api_name = (dec["model_api_name"] or "").strip() or (dec["name"] or "").strip()
+        scheduler.add_job(dec["id"], dec["host"], dec["port"], dec["interval"], api_name)
     gw.invalidate_gate(row["id"])
-    return dict(row)
+    return database.model_target_public_dict(dec)
 
 
-@app.get("/api/models/{model_id}", response_model=ModelTargetOut)
+@app.get("/api/models/{model_id}", response_model=ModelTargetPublicOut)
 def get_model(model_id: int):
     with database.get_conn() as conn:
         row = conn.execute(
@@ -87,14 +121,20 @@ def get_model(model_id: int):
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
-    return dict(row)
+    return database.model_target_public_dict(database.decrypt_target_row(row))
 
 
-@app.put("/api/models/{model_id}", response_model=ModelTargetOut)
-def update_model(model_id: int, body: ModelTargetUpdate):
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not fields:
+@app.put("/api/models/{model_id}", response_model=ModelTargetPublicOut)
+def update_model(model_id: int, body: ModelTargetTunableUpdate):
+    raw = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not raw:
         raise HTTPException(status_code=400, detail="No fields to update")
+    fields = {}
+    for k, v in raw.items():
+        if k in ("enabled", "gateway_enabled"):
+            fields[k] = int(v)
+        else:
+            fields[k] = v
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with database.get_conn() as conn:
         conn.execute(
@@ -106,13 +146,14 @@ def update_model(model_id: int, body: ModelTargetUpdate):
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
-    if row["enabled"]:
-        api_name = row["model_api_name"] or row["name"]
-        scheduler.add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
+    dec = database.decrypt_target_row(row)
+    if dec["enabled"]:
+        api_name = (dec["model_api_name"] or "").strip() or (dec["name"] or "").strip()
+        scheduler.add_job(dec["id"], dec["host"], dec["port"], dec["interval"], api_name)
     else:
         scheduler.remove_job(model_id)
     gw.invalidate_gate(model_id)
-    return dict(row)
+    return database.model_target_public_dict(dec)
 
 
 @app.delete("/api/models/{model_id}")
@@ -135,7 +176,9 @@ def check_now(model_id: int):
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
-    run_check(model_id, row["host"], row["port"], row["model_api_name"] or row["name"])
+    dec = database.decrypt_target_row(row)
+    api_name = (dec["model_api_name"] or "").strip() or (dec["name"] or "").strip()
+    run_check(model_id, dec["host"], dec["port"], api_name)
     with database.get_conn() as conn:
         last = conn.execute(
             "SELECT * FROM check_results WHERE model_id = ? ORDER BY id DESC LIMIT 1",
@@ -155,27 +198,28 @@ def restart(model_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    is_dual = bool(row["host_b"])
+    dec = database.decrypt_target_row(row)
+    is_dual = bool((dec.get("host_b") or "").strip())
     if is_dual:
         result = restart_dual(
-            host_a=row["host"],
-            host_b=row["host_b"],
-            container_a=row["container"],
-            container_b=row["container_b"],
-            exec_cmd_a=row["exec_cmd"],
-            exec_cmd_b=row["exec_cmd_b"],
-            ssh_user=row["ssh_user"],
-            ssh_password=row["ssh_password"],
-            ssh_port=row["ssh_port"],
+            host_a=dec["host"],
+            host_b=dec["host_b"],
+            container_a=dec["container"],
+            container_b=dec["container_b"],
+            exec_cmd_a=dec["exec_cmd"],
+            exec_cmd_b=dec["exec_cmd_b"],
+            ssh_user=dec["ssh_user"],
+            ssh_password=dec["ssh_password"],
+            ssh_port=dec["ssh_port"],
         )
     else:
         result = restart_single(
-            host=row["host"],
-            container=row["container"],
-            exec_cmd=row["exec_cmd"],
-            ssh_user=row["ssh_user"],
-            ssh_password=row["ssh_password"],
-            ssh_port=row["ssh_port"],
+            host=dec["host"],
+            container=dec["container"],
+            exec_cmd=dec["exec_cmd"],
+            ssh_user=dec["ssh_user"],
+            ssh_password=dec["ssh_password"],
+            ssh_port=dec["ssh_port"],
         )
     return result
 
@@ -198,7 +242,7 @@ def get_history(model_id: int, limit: Optional[int] = 100):
 
 # ── 仪表盘汇总 ───────────────────────────────────────────────
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", response_model=List[DashboardRowOut])
 def dashboard():
     with database.get_conn() as conn:
         models = conn.execute("SELECT * FROM model_targets ORDER BY id").fetchall()
@@ -212,9 +256,9 @@ def dashboard():
                 """,
                 (m["id"],),
             ).fetchone()
+            base = database.model_target_public_dict(database.decrypt_target_row(m))
             result.append({
-                **dict(m),
-                "is_dual": bool(m["host_b"]),
+                **base,
                 "last_status": last["status"] if last else "unknown",
                 "last_latency_ms": last["latency_ms"] if last else None,
                 "last_checked_at": last["checked_at"] if last else None,

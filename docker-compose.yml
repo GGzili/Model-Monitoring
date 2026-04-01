@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     environment:
       - DB_PATH=/data/monitor.db
+      # Fernet 密钥：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - MONITOR_FERNET_KEY=${MONITOR_FERNET_KEY:-}
       - SSH_USER=root
       - SSH_KEY=/root/.ssh/id_rsa
     volumes:

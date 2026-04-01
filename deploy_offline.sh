@@ -2,6 +2,27 @@
 set -e
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# 构建上下文必须是 dist_package/backend/main.py 与 Dockerfile 同级。
+# 若误打成 backend/backend/main.py，镜像里会出现 /app/main.py（旧）与 /app/backend/main.py（新），
+# uvicorn main:app 仍加载 /app/main.py，导致 /api/dashboard 仍返回 host/ssh 等字段。
+if [ ! -f "$PKG_DIR/backend/main.py" ] && [ -f "$PKG_DIR/backend/backend/main.py" ]; then
+    echo "=== 错误：源码多包了一层 backend/backend/，与 Dockerfile 不同级 ==="
+    echo "请在本机 dist_package/backend 下合并目录后再执行本脚本，例如："
+    echo "  cd \"$PKG_DIR/backend\" && cp -r backend/* . && rm -rf backend"
+    echo "（勿删除 wheels/；合并后应存在: $PKG_DIR/backend/main.py）"
+    exit 1
+fi
+if [ ! -f "$PKG_DIR/backend/main.py" ]; then
+    echo "=== 错误：未找到 $PKG_DIR/backend/main.py，无法构建后端 ==="
+    exit 1
+fi
+
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+else
+    DC="docker-compose"
+fi
+
 echo "=== 加载 Docker 镜像 ==="
 sudo docker load -i "$PKG_DIR/images/python3.11-slim.tar"
 sudo docker load -i "$PKG_DIR/images/nginx-alpine.tar"
@@ -30,14 +51,17 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 EOF
 
-# 复制已构建的 dist
-cp -r "$PKG_DIR/frontend_dist/" "$PKG_DIR/frontend/dist/"
+# 复制已构建的 dist（先删旧目录，避免旧 assets 残留进镜像）
+rm -rf "$PKG_DIR/frontend/dist"
+cp -r "$PKG_DIR/frontend_dist" "$PKG_DIR/frontend/dist"
 
 echo "=== 创建数据目录 ==="
 mkdir -p "$PKG_DIR/data"
 
-echo "=== 启动服务 ==="
+echo "=== 构建镜像（后端 + 前端均 --no-cache；此前若只 build backend，前端会一直用旧 JS）==="
 cd "$PKG_DIR"
-sudo docker compose up -d --build
+sudo $DC build --no-cache backend
+sudo $DC build --no-cache frontend
+sudo $DC up -d
 
 echo "=== 完成！访问 http://$(hostname -I | awk '{print $1}') ==="

@@ -81,9 +81,10 @@ def _resolve_model_row(model_name: str) -> Optional[Any]:
             """
         ).fetchall()
     for r in rows:
-        rid = (r["model_api_name"] or "").strip() or r["name"]
+        d = database.decrypt_target_row(r)
+        rid = (d.get("model_api_name") or "").strip() or (d.get("name") or "").strip()
         if rid == model_name:
-            return r
+            return d
     return None
 
 
@@ -109,7 +110,8 @@ async def list_models_openai():
     now = 1700000000
     data = []
     for r in rows:
-        mid = (r["model_api_name"] or "").strip() or r["name"]
+        d = database.decrypt_target_row(r)
+        mid = (d.get("model_api_name") or "").strip() or (d.get("name") or "").strip()
         data.append(
             {
                 "id": mid,

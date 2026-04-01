@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from checker import run_check
-from database import get_conn
+from database import get_conn, decrypt_target_row
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -38,8 +38,9 @@ def reload_all_jobs():
             "SELECT id, name, model_api_name, host, port, interval FROM model_targets WHERE enabled = 1"
         ).fetchall()
     for row in rows:
-        api_name = row["model_api_name"] or row["name"]
-        add_job(row["id"], row["host"], row["port"], row["interval"], api_name)
+        d = decrypt_target_row(row)
+        api_name = (d["model_api_name"] or "").strip() or (d["name"] or "").strip()
+        add_job(d["id"], d["host"], d["port"], d["interval"], api_name)
 
 
 def start():

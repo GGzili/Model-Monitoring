@@ -1,6 +1,11 @@
 # =============================================================================
 # 离线打包（唯一实现）。入口：pack.ps1 或 pack.bat（参数相同）
 # 输出：dist_package\  → zip 后拷到内网，在 Linux 上执行 deploy_offline.sh（不要在本机跑 pack.bat 当部署）
+#
+# 已自动包含（无需再手动 npm run build / 手抄 dist）：
+#   [2/5] 在 frontend\ 下执行 npm install + npm run build，
+#         并把 frontend\dist\ 内全部文件同步到 dist_package\frontend_dist\（先清空旧目录，避免旧 JS 残留）。
+#
 # -SkipDockerPull : 不 pull；本机 Docker 需已有 python:3.11-slim / nginx:alpine 才能 save
 # -SkipDockerSave : 不 pull/save；需事先放入 dist_package\images\*.tar（见脚本内说明）
 # =============================================================================
@@ -69,14 +74,19 @@ pip download -r "$ROOT\backend\requirements.txt" `
     --only-binary=:all:
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[2/5] Building frontend..."
+Write-Host "[2/5] 前端：npm install + npm run build → 同步到 dist_package\frontend_dist\"
 Set-Location "$ROOT\frontend"
 npm install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 npm run build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Set-Location $ROOT
+if (Test-Path "$OUT\frontend_dist") {
+    Remove-Item -Recurse -Force "$OUT\frontend_dist"
+}
 New-Item -ItemType Directory -Force -Path "$OUT\frontend_dist" | Out-Null
 Copy-Item -Recurse -Force "$ROOT\frontend\dist\*" "$OUT\frontend_dist\"
+Write-Host "  → frontend_dist 已更新（与 frontend\dist 一致）"
 
 Write-Host ("[3/5] Docker images: " + $PythonImage + ", " + $NginxImage)
 $pyTar = Join-Path $OUT "images\python3.11-slim.tar"
