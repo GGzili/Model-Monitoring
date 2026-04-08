@@ -58,6 +58,10 @@ def init_db():
                 ssh_user     TEXT NOT NULL DEFAULT 'appadmin',
                 ssh_password TEXT NOT NULL DEFAULT '',
                 ssh_port     INTEGER NOT NULL DEFAULT 22,
+                -- 双机时节点 B 的 SSH（用户/密码皆空则与节点 A 相同；端口 0 表示与 A 相同）
+                ssh_user_b     TEXT NOT NULL DEFAULT '',
+                ssh_password_b TEXT NOT NULL DEFAULT '',
+                ssh_port_b     INTEGER NOT NULL DEFAULT 0,
                 -- 检测
                 interval     INTEGER NOT NULL DEFAULT 300,
                 enabled      INTEGER NOT NULL DEFAULT 1,
@@ -79,17 +83,42 @@ def init_db():
                 FOREIGN KEY(model_id) REFERENCES model_targets(id)
             );
         """)
-        # 兼容旧数据库：若 model_api_name 列不存在则添加
-        for col_sql in (
-            "ALTER TABLE model_targets ADD COLUMN model_api_name TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE model_targets ADD COLUMN gateway_enabled INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE model_targets ADD COLUMN gateway_max_concurrent INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE model_targets ADD COLUMN gateway_max_queue INTEGER NOT NULL DEFAULT 64",
-        ):
-            try:
-                conn.execute(col_sql)
-            except Exception:
-                pass
+        _migrate_model_targets_columns(conn)
+
+
+def _migrate_model_targets_columns(conn: sqlite3.Connection) -> None:
+    """旧库仅有早期 CREATE 的表结构时补列；新库 CREATE 已含全部列则不会执行任何 ALTER。"""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_targets'"
+    ).fetchone()
+    if not row:
+        return
+    existing = {
+        r[1] for r in conn.execute("PRAGMA table_info(model_targets)").fetchall()
+    }
+    # (列名, ADD COLUMN 后的类型与约束片段) — 仅补缺失列，顺序与历史演进一致
+    alters: list[tuple[str, str]] = [
+        ("host_b", "TEXT NOT NULL DEFAULT ''"),
+        ("port_b", "INTEGER NOT NULL DEFAULT 0"),
+        ("container_b", "TEXT NOT NULL DEFAULT ''"),
+        ("exec_cmd_b", "TEXT NOT NULL DEFAULT ''"),
+        ("ssh_user", "TEXT NOT NULL DEFAULT 'appadmin'"),
+        ("ssh_password", "TEXT NOT NULL DEFAULT ''"),
+        ("ssh_port", "INTEGER NOT NULL DEFAULT 22"),
+        ("ssh_user_b", "TEXT NOT NULL DEFAULT ''"),
+        ("ssh_password_b", "TEXT NOT NULL DEFAULT ''"),
+        ("ssh_port_b", "INTEGER NOT NULL DEFAULT 0"),
+        ("model_api_name", "TEXT NOT NULL DEFAULT ''"),
+        ("gateway_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("gateway_max_concurrent", "INTEGER NOT NULL DEFAULT 1"),
+        ("gateway_max_queue", "INTEGER NOT NULL DEFAULT 64"),
+        ("created_at", "TEXT"),
+    ]
+    for col, decl in alters:
+        if col in existing:
+            continue
+        conn.execute(f"ALTER TABLE model_targets ADD COLUMN {col} {decl}")
+        existing.add(col)
 
 
 @contextmanager

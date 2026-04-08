@@ -57,6 +57,9 @@ cp -r "$PKG_DIR/frontend_dist" "$PKG_DIR/frontend/dist"
 
 echo "=== 创建数据目录 ==="
 mkdir -p "$PKG_DIR/data"
+if [ -d "$PKG_DIR/scripts" ]; then
+    echo "=== 运维脚本: $PKG_DIR/scripts/（如 check_ssh_ports.py，见 scripts/README.md）==="
+fi
 
 echo "=== 构建镜像（后端 + 前端均 --no-cache；此前若只 build backend，前端会一直用旧 JS）==="
 cd "$PKG_DIR"

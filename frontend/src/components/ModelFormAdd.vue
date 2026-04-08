@@ -17,7 +17,7 @@
 
       <el-divider content-position="left">主节点（节点 A）</el-divider>
       <el-form-item label="服务器 IP" prop="host">
-        <el-input v-model="form.host" placeholder="192.168.1.101" />
+        <el-input v-model="form.host" placeholder="如 10.0.0.1" />
       </el-form-item>
       <el-form-item label="检测端口" prop="port">
         <el-input-number v-model="form.port" :min="1" :max="65535" style="width:100%" />
@@ -34,14 +34,48 @@
         />
       </el-form-item>
 
+      <el-divider content-position="left">SSH 认证 — 节点 A（单机时仅此一组；仅保存时写入，之后不可改）</el-divider>
+      <el-form-item label="SSH 用户" prop="ssh_user">
+        <el-input v-model="form.ssh_user" placeholder="appadmin" />
+      </el-form-item>
+      <el-form-item label="SSH 密码" prop="ssh_password">
+        <el-input v-model="form.ssh_password" type="password" show-password placeholder="sudo 密码" />
+      </el-form-item>
+      <el-form-item label="SSH 端口" prop="ssh_port">
+        <el-input-number v-model="form.ssh_port" :min="1" :max="65535" style="width:100%" />
+        <div class="hint">sshd 的端口，与上方「检测端口」（HTTP 推理服务）无关；非 22 时请填实际映射端口。</div>
+      </el-form-item>
+
       <el-divider content-position="left">
         <el-space>
-          节点 B（双机专用）
-          <el-switch v-model="isDual" active-text="启用" inactive-text="单机" @change="onDualModeChange" />
+          双机部署（节点 B）
+          <el-switch
+            v-model="isDual"
+            active-text="双机"
+            inactive-text="单机"
+            @change="onDualModeChange"
+          />
         </el-space>
       </el-divider>
+      <p v-if="!isDual" class="dual-hint">保持「单机」时只需上方节点 A 与一套 SSH；打开「双机」后将出现节点 B 的地址与<strong>第二套 SSH</strong>（可与 A 相同）。</p>
 
       <template v-if="isDual">
+        <el-divider content-position="left">SSH 认证 — 节点 B（可选）</el-divider>
+        <div class="section-desc">
+          与节点 A 的 SSH 分开配置：用户名为空表示 B 与 A 使用同一账号、密码与端口；若 B 机器账号不同，请填写 B 的用户名（密码、端口可留空以沿用 A）。
+        </div>
+        <el-form-item label="SSH 用户 (B)">
+          <el-input v-model="form.ssh_user_b" placeholder="留空则与节点 A 相同" />
+        </el-form-item>
+        <el-form-item label="SSH 密码 (B)">
+          <el-input v-model="form.ssh_password_b" type="password" show-password placeholder="留空则与节点 A 相同" />
+        </el-form-item>
+        <el-form-item label="SSH 端口 (B)">
+          <el-input-number v-model="form.ssh_port_b" :min="0" :max="65535" style="width:100%" />
+          <div class="hint">填 0 表示与节点 A 的 SSH 端口相同。</div>
+        </el-form-item>
+
+        <el-divider content-position="left">节点 B — 服务器与容器</el-divider>
         <el-form-item label="服务器 IP (B)" prop="host_b">
           <el-input v-model="form.host_b" placeholder="192.168.1.102" />
         </el-form-item>
@@ -60,17 +94,6 @@
           />
         </el-form-item>
       </template>
-
-      <el-divider content-position="left">SSH 认证（仅保存时写入，之后不可改）</el-divider>
-      <el-form-item label="SSH 用户" prop="ssh_user">
-        <el-input v-model="form.ssh_user" placeholder="appadmin" />
-      </el-form-item>
-      <el-form-item label="SSH 密码" prop="ssh_password">
-        <el-input v-model="form.ssh_password" type="password" show-password placeholder="sudo 密码" />
-      </el-form-item>
-      <el-form-item label="SSH 端口" prop="ssh_port">
-        <el-input-number v-model="form.ssh_port" :min="1" :max="65535" style="width:100%" />
-      </el-form-item>
 
       <el-divider content-position="left">网关与消息队列</el-divider>
       <div class="section-desc">
@@ -113,6 +136,7 @@
 
 <script setup>
 import { ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { createModel } from '../api/index.js'
 
 const props = defineProps({
@@ -132,6 +156,7 @@ const defaultForm = () => ({
   host: '', port: 8000, container: '', exec_cmd: '',
   host_b: '', port_b: 8000, container_b: '', exec_cmd_b: '',
   ssh_user: 'root', ssh_password: '', ssh_port: 22,
+  ssh_user_b: '', ssh_password_b: '', ssh_port_b: 0,
   interval: 300, enabled: true,
   gateway_enabled: true, gateway_max_concurrent: 1, gateway_max_queue: 64,
 })
@@ -173,22 +198,63 @@ function onDualModeChange(on) {
       port_b: 8000,
       container_b: '',
       exec_cmd_b: '',
+      ssh_user_b: '',
+      ssh_password_b: '',
+      ssh_port_b: 0,
     }
   }
 }
 
 async function submit() {
   await formRef.value.validate()
-  saving.value = true
-  try {
-    const payload = { ...form.value }
-    payload.name = (payload.name || '').trim()
-    payload.model_api_name = (payload.model_api_name || '').trim()
-    payload.enabled = !!payload.enabled
-    payload.gateway_enabled = !!payload.gateway_enabled
-    if (isDual.value && !payload.exec_cmd_b) {
+  const sp = Number(form.value.ssh_port)
+  if (!Number.isFinite(sp) || sp < 1 || sp > 65535) {
+    ElMessage.error('请填写有效的 SSH 端口（1–65535）')
+    return
+  }
+  const f = form.value
+  const payload = {
+    name: (f.name || '').trim(),
+    model_api_name: (f.model_api_name || '').trim(),
+    host: f.host,
+    port: Number(f.port),
+    container: f.container,
+    exec_cmd: f.exec_cmd || '',
+    host_b: '',
+    port_b: 0,
+    container_b: '',
+    exec_cmd_b: '',
+    ssh_user: f.ssh_user,
+    ssh_password: f.ssh_password,
+    ssh_port: Math.trunc(sp),
+    ssh_user_b: '',
+    ssh_password_b: '',
+    ssh_port_b: 0,
+    interval: Number(f.interval),
+    enabled: !!f.enabled,
+    gateway_enabled: !!f.gateway_enabled,
+    gateway_max_concurrent: Number(f.gateway_max_concurrent),
+    gateway_max_queue: Number(f.gateway_max_queue),
+  }
+  if (isDual.value) {
+    const spb = Number(f.ssh_port_b)
+    if (!Number.isFinite(spb) || spb < 0 || spb > 65535) {
+      ElMessage.error('节点 B SSH 端口须为 0–65535（0 表示与 A 相同）')
+      return
+    }
+    payload.host_b = (f.host_b || '').trim()
+    payload.port_b = Number(f.port_b)
+    payload.container_b = f.container_b || ''
+    payload.exec_cmd_b = f.exec_cmd_b || ''
+    payload.ssh_user_b = f.ssh_user_b || ''
+    payload.ssh_password_b = f.ssh_password_b || ''
+    payload.ssh_port_b = Math.trunc(spb)
+    if (!payload.exec_cmd_b) {
       payload.exec_cmd_b = payload.exec_cmd
     }
+  }
+  saving.value = true
+  try {
     await createModel(payload)
     emit('saved')
     emit('close')
@@ -203,4 +269,5 @@ async function submit() {
 .section-desc code { background: #f4f4f5; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
 .hint { font-size: 12px; color: #909399; margin-top: 4px; line-height: 1.45; }
 .hint code { background: #f4f4f5; padding: 0 4px; border-radius: 3px; font-size: 11px; }
+.dual-hint { font-size: 12px; color: #909399; margin: -8px 0 12px; line-height: 1.5; }
 </style>

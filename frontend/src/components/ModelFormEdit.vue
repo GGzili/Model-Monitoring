@@ -8,7 +8,7 @@
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-width="140px">
       <p class="edit-mode-hint">
-        连接信息、API 模型名与 SSH 不在此修改；仅可调整网关与队列。若需改地址或模型 ID，请删除该模型后重新添加。
+        连接信息、API 模型名与 SSH 不在此修改；仅可调整网关与队列。若需改地址、SSH 端口或模型 ID，请删除该模型后重新添加。
       </p>
       <el-divider content-position="left">网关与消息队列</el-divider>
       <el-form-item label="开放网关">

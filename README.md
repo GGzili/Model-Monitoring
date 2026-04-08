@@ -134,8 +134,10 @@ cd model-monitor
 
 **`pack.ps1` 已包含完整前端流程，无需再手动 `npm run build`：**
 
-1. 在 `frontend\` 执行 `npm install` + `npm run build`
+1. 在 `frontend\` 执行 `npm install` + `npm run build`（会先删 `frontend\dist` 再构建，避免旧产物混入）
 2. 清空并更新 **`dist_package\frontend_dist\`**（与 `frontend\dist\` 一致，避免旧 chunk 残留）
+
+脚本会打印 **打包根目录**（须与当前要发布的仓库一致），并在 **`dist_package\PACK_MANIFEST.txt`** 写入时间与 **`git rev-parse HEAD`**（若有 Git）；打 zip 前请打开核对，避免误打包旧目录副本。
 
 产物还包含 `wheels/`、`images/*.tar`、`backend/`、`frontend/`（源码）、`docker-compose.yml`、`deploy_offline.sh` 等。将 **`dist_package` 打成 zip**（勿提交 zip 到 Git，见 `.gitignore`）拷到内网。
 
@@ -170,11 +172,25 @@ sed -i 's/docker compose/docker-compose/g' deploy_offline.sh
 ### 升级与缓存
 
 - 升级时建议保留 **`data/monitor.db`** 并备份 **`MONITOR_FERNET_KEY`**（若启用加密）。
+- **库结构**：启动时会对缺失列自动 `ALTER TABLE` 补列（如 `ssh_port_b`）；无需为新版手改 SQLite，除非你选择删库重建。
 - 部署后界面异常：浏览器 **Ctrl+F5**；确认 **`deploy_offline.sh` 已重建 frontend 镜像**。
+
+### 查看后端业务日志
+
+- `docker compose logs -f backend`（或 `docker-compose logs -f backend`）
+- **经网关的模型调用**（`/v1/models`、`/v1/chat/completions`）及管理操作日志：经 **`logging_config.get_app_logger()`** 打到 **stderr**，前缀 **`[modelmonitor]`**，与 Uvicorn 访问日志一起出现在 `docker logs`；**不**对 **`/api/dashboard`** 轮询打业务日志，避免刷屏。
+- **创建模型 / 重启** 会额外经 **`logging_config.log_stderr_line()`** 各写一行到 stderr（同样带 `[modelmonitor]`），避免仅依赖 `logging` 配置时看不到业务行。
+- 离线包内 **`scripts/check_ssh_ports.py`** 可在宿主机核对库中 `ssh_port`（见 `scripts/README.md`）。
+
+### SSH 端口界面填了非 22，重启仍连 22（与上游 GitHub 对照）
+
+公开仓库 [GGzili/Model-Monitoring](https://github.com/GGzili/Model-Monitoring) 当前 **`backend/main.py` 里 `create_model` 的 `INSERT` 未包含 `ssh_port`（及双机 SSH 相关列）**，新建行会使用表定义里的默认值 **`ssh_port = 22`**。`restart.py` 里 Paramiko 仍从 **`dec["ssh_port"]`** 读端口，因此表现永远是 22，与前端是否填写无关。
+
+**本仓库已修复**：`INSERT` 写入 **`ssh_port` / `ssh_port_b`** 等与 **`database.py` 表结构一致**。若你部署的是 GitHub `master` 未合并修复的版本，请改用本仓库当前代码并 **`docker compose build --no-cache backend`**；已有错误数据可删行重建或自行 `UPDATE model_targets SET ssh_port=…`（管理 API 不暴露改连接信息）。
 
 ---
 
-## 配置说明（添加 / 编辑模型）
+## 配置说明（添加模型 / 调整运行参数）
 
 | 阶段 | 说明 |
 |------|------|
@@ -204,7 +220,7 @@ sed -i 's/docker compose/docker-compose/g' deploy_offline.sh
 |------|------|------|
 | GET | `/api/dashboard` | 仪表盘汇总（公开字段 + `last_*`） |
 | GET | `/api/models` | 模型列表（公开字段） |
-| POST | `/api/models` | 创建 |
+| POST | `/api/models` | 创建（**须含 `ssh_port`**，1–65535；可写 `sshPort`；省略或 null 返回 422） |
 | PUT | `/api/models/{id}` | 仅更新可调字段（见上表） |
 | DELETE | `/api/models/{id}` | 删除 |
 | POST | `/api/models/{id}/check` | 立即检测 |

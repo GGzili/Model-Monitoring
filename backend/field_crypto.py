@@ -80,6 +80,8 @@ ENCRYPTED_TEXT_FIELDS = frozenset(
         "exec_cmd_b",
         "ssh_user",
         "ssh_password",
+        "ssh_user_b",
+        "ssh_password_b",
     }
 )
 

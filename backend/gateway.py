@@ -13,8 +13,19 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import database
+from logging_config import get_app_logger
 
 router = APIRouter(tags=["gateway"])
+log = get_app_logger()
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    if request.client:
+        return request.client.host or "-"
+    return "-"
 
 UPSTREAM_TIMEOUT = float(os.environ.get("GATEWAY_UPSTREAM_TIMEOUT", "600"))
 
@@ -98,7 +109,8 @@ def _forward_headers(request: Request) -> dict:
 
 
 @router.get("/v1/models")
-async def list_models_openai():
+async def list_models_openai(request: Request):
+    ip = _client_ip(request)
     with database.get_conn() as conn:
         rows = conn.execute(
             """
@@ -120,6 +132,7 @@ async def list_models_openai():
                 "owned_by": "model-monitor",
             }
         )
+    log.info("GET /v1/models ip=%s exposed_models=%s", ip, len(data))
     return JSONResponse({"object": "list", "data": data})
 
 
@@ -129,18 +142,35 @@ async def chat_completions(request: Request):
     try:
         payload = json.loads(body_bytes)
     except json.JSONDecodeError:
+        log.warning("POST /v1/chat_completions invalid_json ip=%s", _client_ip(request))
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     model_name = payload.get("model")
     if not model_name or not isinstance(model_name, str):
+        log.warning("POST /v1/chat_completions missing_model ip=%s", _client_ip(request))
         raise HTTPException(status_code=400, detail="Missing or invalid 'model' field")
 
     row = _resolve_model_row(model_name)
     if row is None:
+        log.warning(
+            "POST /v1/chat_completions unknown_or_disabled model=%r ip=%s",
+            model_name,
+            _client_ip(request),
+        )
         raise HTTPException(
             status_code=404,
             detail=f"Unknown or gateway-disabled model: {model_name}",
         )
+
+    stream = bool(payload.get("stream", False))
+    log.info(
+        "POST /v1/chat/completions model=%r resolved_id=%s stream=%s ip=%s body_bytes=%s",
+        model_name,
+        row["id"],
+        stream,
+        _client_ip(request),
+        len(body_bytes),
+    )
 
     gate = await _ensure_gate(
         row["id"],
@@ -150,40 +180,95 @@ async def chat_completions(request: Request):
 
     url = f"http://{row['host']}:{row['port']}/v1/chat/completions"
     headers = _forward_headers(request)
-    stream = bool(payload.get("stream", False))
+    meta = {
+        "model_name": model_name,
+        "model_id": row["id"],
+        "client_ip": _client_ip(request),
+    }
 
     if stream:
-        return await _proxy_stream(gate, url, body_bytes, headers)
-    return await _proxy_json(gate, url, body_bytes, headers)
+        return await _proxy_stream(gate, url, body_bytes, headers, meta)
+    return await _proxy_json(gate, url, body_bytes, headers, meta)
 
 
-async def _proxy_json(gate: ConcurrencyGate, url: str, body: bytes, headers: dict) -> Response:
+async def _proxy_json(
+    gate: ConcurrencyGate,
+    url: str,
+    body: bytes,
+    headers: dict,
+    meta: Dict[str, Any],
+) -> Response:
     async with gate.acquire_slot():
         try:
             async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
                 r = await client.post(url, content=body, headers=headers)
         except httpx.TimeoutException:
+            log.warning(
+                "gateway chat upstream_timeout model=%r id=%s ip=%s stream=false",
+                meta["model_name"],
+                meta["model_id"],
+                meta["client_ip"],
+            )
             raise HTTPException(status_code=504, detail="Upstream timeout")
         except httpx.RequestError as e:
+            log.warning(
+                "gateway chat upstream_error model=%r id=%s ip=%s stream=false err=%s",
+                meta["model_name"],
+                meta["model_id"],
+                meta["client_ip"],
+                e,
+            )
             raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
+    log.info(
+        "gateway chat done model=%r id=%s ip=%s stream=false upstream_http=%s resp_bytes=%s",
+        meta["model_name"],
+        meta["model_id"],
+        meta["client_ip"],
+        r.status_code,
+        len(r.content),
+    )
     media = r.headers.get("content-type", "application/json")
     return Response(content=r.content, status_code=r.status_code, media_type=media)
 
 
 async def _proxy_stream(
-    gate: ConcurrencyGate, url: str, body: bytes, headers: dict
+    gate: ConcurrencyGate,
+    url: str,
+    body: bytes,
+    headers: dict,
+    meta: Dict[str, Any],
 ) -> StreamingResponse:
     async def stream_with_slot() -> AsyncIterator[bytes]:
         async with gate.acquire_slot():
             try:
                 async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
                     async with client.stream("POST", url, content=body, headers=headers) as r:
+                        log.info(
+                            "gateway chat upstream model=%r id=%s ip=%s stream=true upstream_http=%s",
+                            meta["model_name"],
+                            meta["model_id"],
+                            meta["client_ip"],
+                            r.status_code,
+                        )
                         async for chunk in r.aiter_bytes():
                             yield chunk
             except httpx.TimeoutException:
+                log.warning(
+                    "gateway chat upstream_timeout model=%r id=%s ip=%s stream=true",
+                    meta["model_name"],
+                    meta["model_id"],
+                    meta["client_ip"],
+                )
                 raise HTTPException(status_code=504, detail="Upstream timeout")
             except httpx.RequestError as e:
+                log.warning(
+                    "gateway chat upstream_error model=%r id=%s ip=%s stream=true err=%s",
+                    meta["model_name"],
+                    meta["model_id"],
+                    meta["client_ip"],
+                    e,
+                )
                 raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
     return StreamingResponse(

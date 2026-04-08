@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, field_validator, ConfigDict
 from typing import Optional
 
 
@@ -21,7 +21,22 @@ class ModelTargetCreate(BaseModel):
     # SSH（仅创建时可写，之后 API 不返回、不可改）
     ssh_user: str = "appadmin"
     ssh_password: str = ""
-    ssh_port: int = 22
+    # 必填：JSON 省略或 null 时 422，禁止静默落库 22（与前端显式 payload 一致）
+    ssh_port: int = Field(
+        ...,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("ssh_port", "sshPort"),
+    )
+    # 双机节点 B 的 SSH；用户留空则整组沿用节点 A（含密码与端口）
+    ssh_user_b: str = ""
+    ssh_password_b: str = ""
+    ssh_port_b: int = Field(
+        0,
+        ge=0,
+        le=65535,
+        validation_alias=AliasChoices("ssh_port_b", "sshPortB"),
+    )  # 0 表示与 ssh_port 相同
     # 可调（创建时可设，之后仍可通过 PUT 修改）
     interval: int = 300
     enabled: bool = True
@@ -44,11 +59,25 @@ class ModelTargetCreate(BaseModel):
             return ""
         return str(v).strip()
 
+    @field_validator("ssh_port", "ssh_port_b", "port", "port_b", mode="before")
+    @classmethod
+    def coerce_int_ports(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, bool):
+            raise ValueError("端口不能为布尔值")
+        if isinstance(v, str) and v.strip() != "":
+            return int(v.strip(), 10)
+        return v
+
 
 class ModelTargetTunableUpdate(BaseModel):
-    """创建完成后仅允许修改这些字段。"""
+    """创建完成后允许修改的字段。extra=ignore：多余字段静默丢弃。"""
     model_config = ConfigDict(extra="ignore")
 
+    ssh_user: Optional[str] = None
+    ssh_password: Optional[str] = None
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535)
     interval: Optional[int] = Field(None, ge=30)
     enabled: Optional[bool] = None
     gateway_enabled: Optional[bool] = None
@@ -57,7 +86,7 @@ class ModelTargetTunableUpdate(BaseModel):
 
 
 class ModelTargetPublicOut(BaseModel):
-    """列表/详情/创建/更新响应：不含 host/port/container/命令/SSH，仅 is_dual 表示是否双机。"""
+    """列表/详情/创建/更新响应：不含 host/检测端口/容器/命令/SSH；仅 is_dual 表示是否双机。"""
 
     id: int
     name: str

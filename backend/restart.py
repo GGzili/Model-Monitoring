@@ -7,6 +7,17 @@ SSH_CONNECT_TIMEOUT = 10
 EXEC_TIMEOUT = 120  # docker exec 启动命令最长等待
 
 
+def _safe_ssh_port(ssh_port: object) -> int:
+    """将 ssh_port 转为合法整数，无效时回退 22。"""
+    try:
+        sp = int(ssh_port)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        sp = 22
+    if not (1 <= sp <= 65535):
+        sp = 22
+    return sp
+
+
 def _make_client(host: str, ssh_user: str, ssh_password: str,
                  ssh_port: int = SSH_PORT) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
@@ -57,6 +68,8 @@ def restart_single(host: str, container: str, exec_cmd: str,
     """
     client = None
     try:
+        host = (host or "").strip()
+        ssh_port = _safe_ssh_port(ssh_port)
         client = _make_client(host, ssh_user, ssh_password, ssh_port)
 
         # 1. 重启容器
@@ -76,7 +89,10 @@ def restart_single(host: str, container: str, exec_cmd: str,
 
         return {"success": True, "message": "启动命令已下发"}
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return {
+            "success": False,
+            "message": f"SSH {host}:{ssh_port} 连接或执行失败: {e}",
+        }
     finally:
         if client:
             client.close()
@@ -89,14 +105,41 @@ def _restart_node(host: str, container: str, exec_cmd: str,
     results[key] = restart_single(host, container, exec_cmd, ssh_user, ssh_password, ssh_port)
 
 
+def _ssh_for_node_b(
+    ssh_user: str,
+    ssh_password: str,
+    ssh_port: int,
+    ssh_user_b: str,
+    ssh_password_b: str,
+    ssh_port_b: int,
+) -> tuple[str, str, int]:
+    """节点 B：用户非空则用 B 的账号；密码空则回退 A；端口 <=0 则回退 A。"""
+    u = (ssh_user_b or "").strip()
+    if not u:
+        return ssh_user, ssh_password, int(ssh_port)
+    p = (ssh_password_b or "").strip()
+    pwd = p if p else ssh_password
+    port_b = int(ssh_port_b) if ssh_port_b else 0
+    port = port_b if port_b > 0 else int(ssh_port)
+    return u, pwd, port
+
+
 def restart_dual(host_a: str, host_b: str,
                  container_a: str, container_b: str,
                  exec_cmd_a: str, exec_cmd_b: str,
                  ssh_user: str, ssh_password: str,
-                 ssh_port: int = SSH_PORT) -> dict:
+                 ssh_port: int = SSH_PORT,
+                 ssh_user_b: str = "",
+                 ssh_password_b: str = "",
+                 ssh_port_b: int = 0) -> dict:
     """
     双机模型重启：并发在两台服务器上同时执行重启 + 启动命令。
+    节点 B 可使用独立 SSH（见 _ssh_for_node_b）。
     """
+    ub, pb, port_b = _ssh_for_node_b(
+        ssh_user, ssh_password, ssh_port,
+        ssh_user_b, ssh_password_b, ssh_port_b,
+    )
     results = {}
     t_a = threading.Thread(
         target=_restart_node,
@@ -104,7 +147,7 @@ def restart_dual(host_a: str, host_b: str,
     )
     t_b = threading.Thread(
         target=_restart_node,
-        args=(host_b, container_b, exec_cmd_b, ssh_user, ssh_password, ssh_port, results, "b"),
+        args=(host_b, container_b, exec_cmd_b, ub, pb, port_b, results, "b"),
     )
     t_a.start()
     t_b.start()
